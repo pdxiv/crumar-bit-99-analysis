@@ -165,20 +165,22 @@ GND (Pin 20)   - Ground
 
 ## I/O Register Map (0x1000-0x101F)
 
-| Address     | Function                                                   |
-|-------------|-----------------------------------------------------------|
-| `0x1000` | MIDI UART data register (P3.5 = chip select)            |
-| `0x1001` | Waveform selects 1 & 3 (lower 6 bits inverted)          |
-| `0x1002` | Waveform selects 2 & 4 + switch column 3 control        |
-| `0x1003` | S&H channel select + switch columns 1 & 2 control       |
-| `0x1004` | Mode LEDs + tape control (shadow register 0x3E)         |
-| `0x1005` | DAC output register                                      |
-| `0x1006` | 7-segment display output                                 |
-| `0x1007` | ADC input (P3.4 selects mod wheel vs pitch bend)        |
-| `0x1010` | 8253 Timer chip IC35 (DCO frequencies)                  |
-| `0x1014` | 8253 Timer chip IC36 (DCO frequencies)                  |
-| `0x1018` | 8253 Timer chip IC37 (DCO frequencies)                  |
-| `0x101C` | 8253 Timer chip IC38 (DCO frequencies)                  |
+| Address     | Direction | Function                                          |
+|-------------|-----------|---------------------------------------------------|
+|    `0x1000` | R/W       | MIDI UART data register (P3.5 = chip select)      |
+|    `0x1001` | W         | Waveform selects 1 & 3 (lower 6 bits inverted)    |
+|    `0x1002` | W         | Waveform selects 2 & 4 + switch column 3 control  |
+|    `0x1003` | W         | S&H channel select + switch columns 1 & 2 control |
+|    `0x1004` | W         | Mode LEDs + tape control (shadow register 0x3E)   |
+|    `0x1005` | W         | DAC output register                               |
+|    `0x1006` | W         | 7-segment display output                          |
+|    `0x1007` | R         | ADC input (P3.4 selects mod wheel vs pitch bend)  |
+|    `0x1010` | R/W       | 8253 Timer chip IC35 (DCO frequencies)            |
+|    `0x1014` | R/W       | 8253 Timer chip IC36 (DCO frequencies)            |
+|    `0x1018` | R/W       | 8253 Timer chip IC37 (DCO frequencies)            |
+|    `0x101C` | R/W       | 8253 Timer chip IC38 (DCO frequencies)            |
+
+**Direction Key:** R = Read Only, W = Write Only, R/W = Read/Write
 
 ### Detailed Register Specifications
 
