@@ -163,22 +163,40 @@ GND (Pin 20)   - Ground
 | `0x2500-0x25FF` | 256 B | DCO pulse width DAC values                   | Pulse width modulation |
 | `0x3000+` | var   | Timer interrupt service routine              | Real-time CV updates |
 
+**Frequency Lookup Table Details (0x2400-0x24F3):**
+This table contains 122 16-bit timer divider values for equal temperament tuning:
+* Each entry corresponds to a MIDI note number
+* Values calculated for 2MHz input clock with /16 scaling
+* Provides precise musical frequencies across full MIDI range
+
 ## I/O Register Map (0x1000-0x101F)
 
 | Address     | Direction | Function                                          |
 |-------------|-----------|---------------------------------------------------|
-|    `0x1000` | R/W       | MIDI UART data register (P3.5 = chip select)      |
-|    `0x1001` | W         | Waveform selects 1 & 3 (lower 6 bits inverted)    |
-|    `0x1002` | W         | Waveform selects 2 & 4 + switch column 3 control  |
-|    `0x1003` | W         | S&H channel select + switch columns 1 & 2 control |
-|    `0x1004` | W         | Mode LEDs + tape control (shadow register 0x3E)   |
-|    `0x1005` | W         | DAC output register                               |
-|    `0x1006` | W         | 7-segment display output                          |
-|    `0x1007` | R         | ADC input (P3.4 selects mod wheel vs pitch bend)  |
-|    `0x1010` | R/W       | 8253 Timer chip IC35 (DCO frequencies)            |
-|    `0x1014` | R/W       | 8253 Timer chip IC36 (DCO frequencies)            |
-|    `0x1018` | R/W       | 8253 Timer chip IC37 (DCO frequencies)            |
-|    `0x101C` | R/W       | 8253 Timer chip IC38 (DCO frequencies)            |
+| `0x1000` | R/W       | MIDI UART data register (P3.5 = chip select)      |
+| `0x1001` | W         | Waveform selects 1 & 3 (lower 6 bits inverted)    |
+| `0x1002` | W         | Waveform selects 2 & 4 + switch column 3 control  |
+| `0x1003` | W         | S&H channel select + switch columns 1 & 2 control |
+| `0x1004` | W         | Mode LEDs + tape control (shadow register 0x3E)   |
+| `0x1005` | W         | DAC output register                               |
+| `0x1006` | W         | 7-segment display output                          |
+| `0x1007` | R         | ADC input (P3.4 selects mod wheel vs pitch bend)  |
+| `0x1010` | R/W       | IC35 Counter 0 (Voice 1 DCO1)                     |
+| `0x1011` | R/W       | IC35 Counter 1 (Voice 1 DCO2)                     |
+| `0x1012` | R/W       | IC35 Counter 2 (Voice 2 DCO1)                     |
+| `0x1013` | W         | IC35 Control Word Register                        |
+| `0x1014` | R/W       | IC36 Counter 0 (Voice 2 DCO2)                     |
+| `0x1015` | R/W       | IC36 Counter 1 (Voice 3 DCO1)                     |
+| `0x1016` | R/W       | IC36 Counter 2 (Voice 3 DCO2)                     |
+| `0x1017` | W         | IC36 Control Word Register                        |
+| `0x1018` | R/W       | IC37 Counter 0 (Voice 4 DCO1)                     |
+| `0x1019` | R/W       | IC37 Counter 1 (Voice 4 DCO2)                     |
+| `0x101A` | R/W       | IC37 Counter 2 (Voice 5 DCO1)                     |
+| `0x101B` | W         | IC37 Control Word Register                        |
+| `0x101C` | R/W       | IC38 Counter 0 (Voice 5 DCO2)                     |
+| `0x101D` | R/W       | IC38 Counter 1 (Voice 6 DCO1)                     |
+| `0x101E` | R/W       | IC38 Counter 2 (Voice 6 DCO2)                     |
+| `0x101F` | W         | IC38 Control Word Register                        |
 
 **Direction Key:** R = Read Only, W = Write Only, R/W = Read/Write
 
@@ -324,9 +342,83 @@ Two-byte sequence for each key event:
 
 ### Timer Chips Interface
 
-* Four 8253 timer chips at I/O addresses 0x1010, 0x1014, 0x1018, 0x101C
-* Generate DCO frequencies based on MIDI note numbers
-* Programmed with divider values from lookup table at 0x2400+
+The BIT 99 uses four Intel 8253 programmable interval timer chips to generate precise frequencies for the 12 DCOs (Digital Controlled Oscillators):
+
+**Chip Configuration:**
+* **IC35 (TIMER1)**: Base address 0x1010-0x1013
+* **IC36 (TIMER2)**: Base address 0x1014-0x1017  
+* **IC37 (TIMER3)**: Base address 0x1018-0x101B
+* **IC38 (TIMER4)**: Base address 0x101C-0x101F
+
+Each 8253 provides 3 independent 16-bit counters, giving 12 total timers (2 DCOs per voice × 6 voices).
+
+**Address Mapping within each chip:**
+* Base+0: Counter 0
+* Base+1: Counter 1  
+* Base+2: Counter 2
+* Base+3: Control Word Register
+
+**Initialization Sequence:**
+During system startup, all 12 counters are configured identically:
+1. Starting at address 0x1013 (first chip's control register)
+2. Three control words written per chip:
+   - **0x36** for Counter 0: Mode 3, LSB/MSB loading, Binary counting
+   - **0x76** for Counter 1: Mode 3, LSB/MSB loading, Binary counting  
+   - **0xB6** for Counter 2: Mode 3, LSB/MSB loading, Binary counting
+3. Address advances by 4 to reach next chip's control register
+
+**Mode 3 Operation (Square Wave Rate Generator):**
+* Produces square wave output with 50% duty cycle
+* Output frequency = Input Clock Frequency / Loaded Count Value
+* Input clock: 2MHz
+* Final DCO frequency = 2MHz / divider_value / 16
+
+**Voice-to-Timer Assignment:**
+* Voice 1: Timers on IC35 (counters 0, 1)
+* Voice 2: Timers on IC35 (counter 2) + IC36 (counter 0)
+* Voice 3: Timers on IC36 (counters 1, 2)
+* Voice 4: Timers on IC37 (counters 0, 1)
+* Voice 5: Timers on IC37 (counter 2) + IC38 (counter 0)
+* Voice 6: Timers on IC38 (counters 1, 2)
+
+Each voice uses two timers for its two DCOs, allowing detuning and complex timbres.
+
+### DCO Frequency Generation System
+
+The BIT 99's frequency generation system converts MIDI note numbers to precise musical frequencies using the 8253 timer chips:
+
+**Frequency Calculation Process:**
+1. **MIDI Note Input**: System receives MIDI note numbers (12-120, representing C0 to C10)
+2. **Octave Normalization**: Notes below 24 are raised by 12 (one octave) to ensure minimum C1
+3. **Table Lookup**: 16-bit divider values retrieved from lookup table at 0x2400-0x24F3
+4. **Timer Loading**: Divider values loaded into appropriate 8253 counters
+
+**Mathematical Relationship:**
+
+```
+Timer Output Frequency = 2MHz / Loaded Divider Value
+DCO Frequency = Timer Output Frequency / 16
+Final Audio Frequency = 2MHz / Divider / 16
+```
+
+**Example Calculations:**
+* MIDI Note 60 (Middle C, ~261.63Hz): Divider ≈ 478, Timer freq ≈ 4186Hz, DCO freq ≈ 261.6Hz
+* MIDI Note 48 (C3, ~130.81Hz): Divider ≈ 956, Timer freq ≈ 2093Hz, DCO freq ≈ 130.8Hz
+
+**Real-Time Frequency Control:**
+* **Split Mode**: Different frequencies for upper/lower keyboard sections
+* **Double Mode**: Layered sounds with independent tuning
+* **Transpose**: Mathematical adjustment to base divider values
+* **Pitch Bend**: Real-time frequency modulation via MIDI
+* **Detuning**: Slight offsets between DCOs for rich textures
+* **LFO Modulation**: Low-frequency oscillator affects effective frequencies
+
+**Timer Value Loading Protocol:**
+The subroutine at L1974 handles frequency updates:
+1. Calculate timer address based on voice number and DCO selection
+2. Retrieve 16-bit divider from frequency table
+3. Write low byte first, then high byte to selected counter
+4. Counter immediately begins generating new frequency
 
 ## System Timing and Performance
 
@@ -343,21 +435,6 @@ Two-byte sequence for each key event:
 * All 24 control voltages updated each interrupt cycle
 * Switch matrix scanned every 8th interrupt (~21.3ms)
 * ADC alternates between mod wheel and pitch bend each interrupt
-
-### DCO Frequency Generation
-
-* 8253 timers use 2MHz clock input (derived from system clock)
-* Timer divider calculation: DCO_freq = 2MHz / divider_value / 16
-* MIDI note 60 (Middle C): divider ~ 956, frequency ~ 130.75Hz
-* Lookup table provides equal temperament tuning across full MIDI range
-
-### MIDI Note to Frequency Calculation
-
-```
-Timer Frequency = 2MHz / divider_value
-DCO Frequency = Timer Frequency / 16
-Example: MIDI note 48 (C3) = 2MHz/956/16 = 130.75 Hz
-```
 
 ### Real-Time Performance Specifications
 

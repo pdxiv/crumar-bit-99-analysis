@@ -13,6 +13,10 @@ This repository contains a comprehensive analysis of the Crumar BIT 99 synthesiz
 
 * **[User Manual](manual.md)** - Complete user manual for the Crumar BIT 99 synthesizer in markdown format
 
+### Additional documentation
+
+* **[8253 Datasheet](intel_8253_datasheet.md)** - Intel 8253 Programmable Interval Timer official datasheet
+
 ## Key Features
 
 * **6-voice polyphonic synthesis** with dynamic voice allocation
