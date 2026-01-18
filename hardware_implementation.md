@@ -3,6 +3,7 @@
 ## Architecture Overview
 
 The BIT 99 uses an Intel 8031 microcontroller (external ROM) as the main processor, interfacing with:
+
 * 4K external SRAM (0x0000-0x0FFF)
 * 8K external EPROM (contains lookup tables and some code at 0x2000+)
 * Multiple hardware interface registers
@@ -165,6 +166,7 @@ GND (Pin 20)   - Ground
 
 **Frequency Lookup Table Details (0x2400-0x24F3):**
 This table contains 122 16-bit timer divider values for equal temperament tuning:
+
 * Each entry corresponds to a MIDI note number
 * Values calculated for 2MHz input clock with /16 scaling
 * Provides precise musical frequencies across full MIDI range
@@ -173,12 +175,12 @@ This table contains 122 16-bit timer divider values for equal temperament tuning
 
 | Address     | Direction | Function                                          |
 |-------------|-----------|---------------------------------------------------|
-| `0x1000` | R/W       | MIDI UART data register (P3.5 = chip select)      |
+| `0x1000` | R/W       | NEC µPD71051 USART data register (P3.5 = chip select) |
 | `0x1001` | W         | Waveform selects 1 & 3 (lower 6 bits inverted)    |
 | `0x1002` | W         | Waveform selects 2 & 4 + switch column 3 control  |
 | `0x1003` | W         | S&H channel select + switch columns 1 & 2 control |
 | `0x1004` | W         | Mode LEDs + tape control (shadow register 0x3E)   |
-| `0x1005` | W         | DAC output register                               |
+| `0x1005` | W         | DAC0800 output register (8-bit DAC)               |
 | `0x1006` | W         | 7-segment display output                          |
 | `0x1007` | R         | ADC input (P3.4 selects mod wheel vs pitch bend)  |
 | `0x1010` | R/W       | IC35 Counter 0 (Voice 1 DCO1)                     |
@@ -202,81 +204,228 @@ This table contains 122 16-bit timer divider values for equal temperament tuning
 
 ### Detailed Register Specifications
 
-**0x1000 - MIDI UART Data Register**
-* P3.5 = 1: Enable UART chip select
-* P3.5 = 0: Disable UART chip select
+**0x1000 - NEC µPD71051 USART Data Register**
+
+* NEC µPD71051 Serial Control Unit (CMOS USART)
+* P3.5 = 1: Enable USART chip select
+* P3.5 = 0: Disable USART chip select
 * Interrupt-driven RX/TX with circular buffers
 
-**0x1001 - Waveform Selects 1 & 3 Register**
+**0x1001 - Waveform Selects 1 & 3 Register (IC23)**
+
 * Controls waveform selection for DCO voices 1 and 3
-* Data = shadow register 0x2A with lower 6 bits inverted
-* Bits 7-6: Passed through unchanged
-* Bits 5-0: Inverted from shadow register before output
+* Source: Shadow register 0x2A with bit manipulation before output
+* Write sequence (code at 0x07F8-0x0807):
+  1. Load shadow 0x2A into accumulator and breg
+  2. Complement accumulator (invert all bits)
+  3. AND accumulator with 0x3F (keep only bits 5-0 inverted)
+  4. AND breg with 0xC0 (keep only bits 7-6 original)
+  5. OR results together
+  6. Write to 0x1001
+* Bits 7-6: Passed through unchanged from shadow (possible additional control signals)
+* Bits 5-0: Inverted from shadow register (active-low waveform enables)
+* Each voice (1 and 3) uses 3 bits for triangle/sawtooth/pulse waveform selection
 
-**0x1002 - Waveform Selects 2 & 4 Register + Switch Column 3**
-* Controls waveform selection for DCO voices 2 and 4
-* Bit 7-0: All bits inverted from shadow register 0x2B
-* Exception: Bit 6 controls switch column 3 drive (from shadow bit 6)
-* This register combines waveform data with switch matrix control
+**0x1002 - Waveform Selects 2 & 4 Register + Switch Column 3 (IC22)**
 
-**0x1003 - S&H Select + Switch Columns 1 & 2**
-* Bits 0-5: Analog channel selection for Sample & Hold
-* Bit 6: Switch column 1 drive
-* Bit 7: Switch column 2 drive
+* Controls waveform selection for DCO voices 2 and 4, plus switch matrix scanning
+* Source: Shadow register 0x2B with special handling
+* Write sequence (code at 0x1A45-0x1A54):
+  1. Write S&H select value to 0x1003
+  2. Load shadow 0x2B into accumulator
+  3. Save bit 6 to carry flag
+  4. Complement all bits in accumulator
+  5. Restore bit 6 from carry flag (preserving original value)
+  6. Write to 0x1002
+* Bits 7, 5-0: Inverted from shadow 0x2B (active-low waveform enables for voices 2 and 4)
+* Bit 6: NOT inverted - controls switch column 3 drive (0 = inactive, 1 = active scan)
+* This register multiplexes waveform control and switch scanning on same hardware IC
 
-**0x1004 - Mode LEDs + Tape Control**
-* Bits 0-5: LED control (0 = LED on, 1 = LED off)
+**0x1003 - S&H Channel Select + Switch Columns 1 & 2 (IC17)**
+
+This register controls three 4051 8-channel analog multiplexer chips that route DAC output to 24 Sample & Hold circuits.
+
+**Bit Assignment:**
+
+* Bits 0-2: Channel select lines (A, B, C) - connected to all three 4051 chips
+  * These 3 bits select which of 8 channels (0-7) on the enabled chip(s)
+* Bit 3: Chip select for first 4051 (IC20) - 1 = enable chip
+* Bit 4: Chip select for second 4051 (IC21) - 1 = enable chip  
+* Bit 5: Chip select for third 4051 (IC22) - 1 = enable chip
+* Bit 6: Switch matrix column 1 drive (1 = activate column for scanning)
+* Bit 7: Switch matrix column 2 drive (1 = activate column for scanning)
+
+**4051 Multiplexer Operation:**
+
+* Each 4051 routes 1 of 8 analog inputs to its output based on bits 0-2
+* Bits 3-5 enable which 4051 chip(s) pass signal to their S&H circuits
+* Multiple chips can be enabled simultaneously (bits 3-5 not mutually exclusive)
+* Code 0x3F (0b00111111) enables all three chips on channel 7 - used as "disable/hold all"
+
+**Typical CV update sequence:**
+
+1. Write channel code (bits 5-3 select chip, bits 2-0 select channel within chip)
+2. Write value to DAC at 0x1005
+3. Write 0x3F to hold all channels (or next channel code to continue updates)
+
+**0x1004 - Mode LEDs + Tape Control (IC3)**
+
+* Bits 0-5: Mode LED outputs (inverted from shadow 0x3E: shadow 1 = LED on, output 0 = LED on)
+  * Bit 0: ADDRESS LED
+  * Bit 1: COMPARE LED
+  * Bit 2: LOWER LED
+  * Bit 3: PARK LED
+  * Bit 4: UPPER LED
+  * Bit 5: Additional mode LED
 * Bit 6: Tape output enable (1 = enable FSK output to cassette)
-* Bit 7: Switch row select for matrix scanning
-* Managed via shadow register at 0x3E
+* Bit 7: Appears unused in analyzed code
+* Shadow register at 0x3E: firmware sets bit=1 for LED on, hardware inverts before output
+* Write sequence: firmware writes to 0x3E shadow → calls L0861 → reads shadow, complements, writes to 0x1004
 
 **0x1005 - DAC Output**
+
 * 8-bit DAC for selected analog channel
 * Used with S&H select to update control voltages
 
 **0x1006 - Display Register**
+
 * 7-segment display digit output
 * Multiplexed display system
 
 **0x1007 - ADC Input**
+
 * P3.4 = 0: Pitch bend wheel
 * P3.4 = 1: Modulation wheel
 * Alternated each timer interrupt cycle
 
 ### Sample & Hold Channel Codes (Register 0x1003)
 
-| Code Range | Function                                     |
-|------------|---------------------------------------------|
-| `0x30-0x35` | VC1-VC6 (filter cutoff frequencies 1-6)    |
-| `0x36-0x37` | VEN1-VEN2 (VCA envelope 1-2)               |
-| `0x28-0x2B` | VEN3-VEN6 (VCA envelope 3-6)               |
-| `0x2C-0x2F` | VPU1-VPU4 (DCO pulse width 1-4)            |
-| `0x18-0x19` | LFO1/LFO2 CV outputs                        |
-| `0x1A-0x1B` | VRE1/VRE2 (VCF resonance 1-3, 4-6)         |
-| `0x1C` | DETUNE CV                                   |
-| `0x1D` | BEND CV                                     |
-| `0x1E-0x1F` | NOISE1/NOISE2 CV                            |
-| `0x3F` | Disable all S&H channels                   |
+The BIT 99 uses three 4051 8-channel analog multiplexers feeding Sample & Hold circuits. Bits 0-2 select the channel (0-7) within a chip, while bits 3-5 enable which 4051 chip routes to its S&H circuits.
+
+**Channel Code Format:** `0b00[bit5][bit4][bit3][bit2][bit1][bit0]`
+
+* Bits 2-0: Channel address (0-7) on 4051 A/B/C select lines
+* Bit 3: Enable IC20 (first 4051 chip)
+* Bit 4: Enable IC21 (second 4051 chip)
+* Bit 5: Enable IC22 (third 4051 chip)
+
+| Code | Hex  | Binary   | Chip Enable | Channel | Function                           | Signal Name |
+|------|------|----------|-------------|---------|------------------------------------|-------------|
+| 48   | 0x30 | 00110000 | IC21+IC22   | 0       | Voice 1 filter cutoff              | VC1         |
+| 49   | 0x31 | 00110001 | IC21+IC22   | 1       | Voice 2 filter cutoff              | VC2         |
+| 50   | 0x32 | 00110010 | IC21+IC22   | 2       | Voice 3 filter cutoff              | VC3         |
+| 51   | 0x33 | 00110011 | IC21+IC22   | 3       | Voice 4 filter cutoff              | VC4         |
+| 52   | 0x34 | 00110100 | IC21+IC22   | 4       | Voice 5 filter cutoff              | VC5         |
+| 53   | 0x35 | 00110101 | IC21+IC22   | 5       | Voice 6 filter cutoff              | VC6         |
+| 54   | 0x36 | 00110110 | IC21+IC22   | 6       | Voice 1 VCA envelope (inverted)    | VEN1        |
+| 55   | 0x37 | 00110111 | IC21+IC22   | 7       | Voice 2 VCA envelope (inverted)    | VEN2        |
+| 40   | 0x28 | 00101000 | IC21        | 0       | Voice 3 VCA envelope (inverted)    | VEN3        |
+| 41   | 0x29 | 00101001 | IC21        | 1       | Voice 4 VCA envelope (inverted)    | VEN4        |
+| 42   | 0x2A | 00101010 | IC21        | 2       | Voice 5 VCA envelope (inverted)    | VEN5        |
+| 43   | 0x2B | 00101011 | IC21        | 3       | Voice 6 VCA envelope (inverted)    | VEN6        |
+| 44   | 0x2C | 00101100 | IC21        | 4       | DCO pulse width 1                  | VPU1        |
+| 45   | 0x2D | 00101101 | IC21        | 5       | DCO pulse width 2                  | VPU2        |
+| 46   | 0x2E | 00101110 | IC21        | 6       | DCO pulse width 3                  | VPU3        |
+| 47   | 0x2F | 00101111 | IC21        | 7       | DCO pulse width 4                  | VPU4        |
+| 24   | 0x18 | 00011000 | IC20        | 0       | LFO1 modulation output             | VLFO1       |
+| 25   | 0x19 | 00011001 | IC20        | 1       | LFO2 modulation output             | VLFO2       |
+| 26   | 0x1A | 00011010 | IC20        | 2       | Filter resonance voices 1-3        | VRE1        |
+| 27   | 0x1B | 00011011 | IC20        | 3       | Filter resonance voices 4-6        | VRE2        |
+| 28   | 0x1C | 00011100 | IC20        | 4       | DCO detune control                 | VDETUNE     |
+| 29   | 0x1D | 00011101 | IC20        | 5       | Pitch bend control                 | VBEND       |
+| 30   | 0x1E | 00011110 | IC20        | 6       | Noise generator 1                  | VNOISE1     |
+| 31   | 0x1F | 00011111 | IC20        | 7       | Noise generator 2                  | VNOISE2     |
+| 63   | 0x3F | 00111111 | All 3 chips | 7       | Disable all S&H (hold all values)  | -           |
+| 29   | 0x1D | Pitch bend control                 | IC20     | VBEND       |
+| 30   | 0x1E | Noise generator 1                  | IC20     | VNOISE1     |
+| 31   | 0x1F | Noise generator 2                  | IC20     | VNOISE2     |
+| 63   | 0x3F | Disable all S&H (hold all values)  | All      | -           |
+
+**Note**: VCA envelope values (VEN1-VEN6) are complemented (inverted) by firmware before writing to DAC, as VCA control is active-low.
 
 ## Control Voltage Generation System
 
-The BIT 99 uses a sophisticated time-multiplexed system where a single DAC generates all control voltages:
+The BIT 99 uses a sophisticated time-multiplexed system where a single 8-bit DAC generates all 24 control voltages:
 
-### CV Update Sequence (every timer interrupt ~375Hz)
+### Hardware Architecture
 
-1. **Filter Cutoff** (VC1-VC6): 6 voices × filter frequency
-2. **VCA Control** (VEN1-VEN6): 6 voices × amplitude (inverted)  
-3. **Pulse Width** (VPU1-VPU4): DCO pulse width modulation
-4. **LFO Outputs**: LFO1/LFO2 control voltages
-5. **Filter Resonance** (VRE1-VRE2): Resonance for voices 1-3, 4-6
-6. **Global CVs**: Detune, pitch bend, noise sources
+**DAC and Multiplexing:**
+
+* Single DAC0800 8-bit DAC (register 0x1005) shared by all 24 control voltages
+* Three 4051 8-channel analog multiplexers (IC20, IC21, IC22) route DAC output
+* 24 Sample & Hold circuits capture and hold individual CV values
+* Control via register 0x1003: bits 0-2 select channel, bits 3-5 enable chip(s)
+
+**Update Rate:**
+
+* All 24 channels refreshed every Timer 0 interrupt: **325.5 Hz** (3.072ms period)
+* No variation between channels - all maintain identical refresh rate
+* Sequential burst write pattern: select channel → write DAC → disable (hold)
+
+### Hardware Write Timing (Machine Cycles)
+
+Each S&H channel update requires a specific sequence of I/O register writes. Timing varies by complexity:
+
+**Hardware Write Sequence (example for VC1):**
+
+```
+mov dptr,#01005H    ; 2 cycles - load DAC register address
+movx a,@r0          ; 2 cycles - read CV value from RAM
+movx @dptr,a        ; 2 cycles - write to DAC output
+mov dptr,#01003H    ; 2 cycles - load S&H control register address
+mov a,#030H         ; 1 cycle  - load channel code (VC1)
+movx @dptr,a        ; 2 cycles - enable S&H channel (capture DAC value)
+inc r0              ; 1 cycle  - advance RAM pointer
+mov a,#03FH         ; 1 cycle  - load disable-all code
+movx @dptr,a        ; 2 cycles - disable all S&H (hold captured values)
+```
+
+**Hardware Write Time by Channel Type:**
+
+* **Simple channels** (18 channels): **15 machine cycles = 15 microseconds**
+  * VC1-VC6 (filter cutoff), VRE1-VRE2 (resonance), VPU1-VPU4 (pulse width)
+  * VBEND (pitch bend), VNOISE1-VNOISE2 (noise)
+  * 9 instructions: load addresses, read RAM, write DAC, enable/disable S&H
+  
+* **Inverted channels** (6 channels): **16 machine cycles = 16 microseconds**
+  * VEN1-VEN6 (VCA envelopes - active low, requires inversion)
+  * VDETUNE (detune CV - inverted)
+  * 10 instructions: adds `cpl a` to complement value before DAC write
+  
+* **Computed channels** (2 channels): **~150-200 machine cycles = 150-200 microseconds**
+  * VLFO1, VLFO2 (computed inline during hardware update)
+  * Includes multiplication, conditional logic, parameter reads
+  * Much longer due to real-time computation before hardware write
+
+**Total Hardware Write Time:**
+
+* 18 simple × 15μs = 270μs
+* 6 inverted × 16μs = 96μs
+* 2 computed × 175μs = 350μs (average)
+* **Total: ~716 microseconds per interrupt cycle**
+
+**Important:** For 22 of 24 channels, this timing represents only the hardware I/O operation. CV value computation happens elsewhere in firmware (envelope generators, MIDI handlers, etc.). Only LFO channels compute values during the hardware update sequence.
+
+See software_implementation.md for complete interrupt handler task breakdown and CV computation algorithms.
 
 ### Timing Critical Operations
 
-The CV generation follows this pattern:
-1. Select S&H channel via register 0x1003
-2. Write CV value to DAC via register 0x1005  
-3. Disable S&H channels (set 0x1003 = 0x3F) to hold value
+The CV generation follows this pattern for each channel:
+
+1. Select S&H channel via register 0x1003 (bits 0-2 = channel, bits 3-5 = chip enable)
+2. Write CV value to DAC via register 0x1005 (analog output appears immediately)
+3. S&H circuit captures DAC voltage while channel enabled (~1-2μs settling time)
+4. Disable S&H channels (write 0x3F to 0x1003) - capacitor holds captured voltage
+5. Move to next channel (DAC output changes, but previous S&H holds its value)
+
+**Hardware Settling Time:**
+
+* DAC0800 settling: <1 microsecond (typ. 500ns for 8-bit DAC)
+* 4051 switching: ~200ns propagation delay
+* S&H acquisition: ~1-2μs (capacitor charging time)
+* Total analog settling per channel: <3μs (well within 15μs write cycle)
+
+## Interrupt Hardware
 
 ## Interrupt Hardware
 
@@ -300,14 +449,15 @@ The CV generation follows this pattern:
 
 ### MIDI Interface
 
-* External MIDI UART connected to I/O register 0x1000
-* P3.5 provides chip select signal to UART
-* UART generates interrupts on P3.2 (TX ready) and P3.3 (RX ready)
+* NEC µPD71051 USART (Serial Control Unit) connected to I/O register 0x1000
+* P3.5 provides chip select signal to USART
+* USART generates interrupts on P3.2 (TX ready) and P3.3 (RX ready)
 * MIDI IN/OUT isolation and buffering handled by external circuitry
 
 ### Keybed Communication Hardware
 
 **Hardware Configuration:**
+
 * P3.0 (RXD): Serial data input from keybed microcontroller
 * P3.1 (TXD): Serial data output to keybed microcontroller  
 * Internal UART configured for 8-bit data, no parity
@@ -316,18 +466,21 @@ The CV generation follows this pattern:
 
 **Protocol Timing:**
 Two-byte sequence for each key event:
+
 1. Note Number: Piano key - 12 (range 0x00-0x7F)
 2. Velocity: 0x00 = key up, 0x01-0x1F = key down velocity
 
 ### Tape Interface Hardware
 
 **Hardware Connections:**
+
 * P3.1 (TXD): Dual function - keybed communication and tape handshake signal
 * I/O Register 0x1004 bit 6: Tape output enable/disable control
 * Tape TX buffer: 128 bytes at 0x0300-0x037F for outgoing data
 * Audio output: Digital data converted to audio tones for cassette recording
 
 **Data Format:**
+
 * Uses frequency-shift keying (FSK) encoding for reliability
 * Two audio tones represent binary 0 and 1 (typically ~1200Hz and 2400Hz)
 * Includes program number, patch data, and checksum
@@ -345,6 +498,7 @@ Two-byte sequence for each key event:
 The BIT 99 uses four Intel 8253 programmable interval timer chips to generate precise frequencies for the 12 DCOs (Digital Controlled Oscillators):
 
 **Chip Configuration:**
+
 * **IC35 (TIMER1)**: Base address 0x1010-0x1013
 * **IC36 (TIMER2)**: Base address 0x1014-0x1017  
 * **IC37 (TIMER3)**: Base address 0x1018-0x101B
@@ -353,6 +507,7 @@ The BIT 99 uses four Intel 8253 programmable interval timer chips to generate pr
 Each 8253 provides 3 independent 16-bit counters, giving 12 total timers (2 DCOs per voice × 6 voices).
 
 **Address Mapping within each chip:**
+
 * Base+0: Counter 0
 * Base+1: Counter 1  
 * Base+2: Counter 2
@@ -360,20 +515,23 @@ Each 8253 provides 3 independent 16-bit counters, giving 12 total timers (2 DCOs
 
 **Initialization Sequence:**
 During system startup, all 12 counters are configured identically:
+
 1. Starting at address 0x1013 (first chip's control register)
 2. Three control words written per chip:
-   - **0x36** for Counter 0: Mode 3, LSB/MSB loading, Binary counting
-   - **0x76** for Counter 1: Mode 3, LSB/MSB loading, Binary counting  
-   - **0xB6** for Counter 2: Mode 3, LSB/MSB loading, Binary counting
+   * **0x36** for Counter 0: Mode 3, LSB/MSB loading, Binary counting
+   * **0x76** for Counter 1: Mode 3, LSB/MSB loading, Binary counting  
+   * **0xB6** for Counter 2: Mode 3, LSB/MSB loading, Binary counting
 3. Address advances by 4 to reach next chip's control register
 
 **Mode 3 Operation (Square Wave Rate Generator):**
+
 * Produces square wave output with 50% duty cycle
 * Output frequency = Input Clock Frequency / Loaded Count Value
 * Input clock: 2MHz
 * Final DCO frequency = 2MHz / divider_value / 16
 
 **Voice-to-Timer Assignment:**
+
 * Voice 1: Timers on IC35 (counters 0, 1)
 * Voice 2: Timers on IC35 (counter 2) + IC36 (counter 0)
 * Voice 3: Timers on IC36 (counters 1, 2)
@@ -388,6 +546,7 @@ Each voice uses two timers for its two DCOs, allowing detuning and complex timbr
 The BIT 99's frequency generation system converts MIDI note numbers to precise musical frequencies using the 8253 timer chips:
 
 **Frequency Calculation Process:**
+
 1. **MIDI Note Input**: System receives MIDI note numbers (12-120, representing C0 to C10)
 2. **Octave Normalization**: Notes below 24 are raised by 12 (one octave) to ensure minimum C1
 3. **Table Lookup**: 16-bit divider values retrieved from lookup table at 0x2400-0x24F3
@@ -402,10 +561,12 @@ Final Audio Frequency = 2MHz / Divider / 16
 ```
 
 **Example Calculations:**
+
 * MIDI Note 60 (Middle C, ~261.63Hz): Divider ≈ 478, Timer freq ≈ 4186Hz, DCO freq ≈ 261.6Hz
 * MIDI Note 48 (C3, ~130.81Hz): Divider ≈ 956, Timer freq ≈ 2093Hz, DCO freq ≈ 130.8Hz
 
 **Real-Time Frequency Control:**
+
 * **Split Mode**: Different frequencies for upper/lower keyboard sections
 * **Double Mode**: Layered sounds with independent tuning
 * **Transpose**: Mathematical adjustment to base divider values
@@ -415,6 +576,7 @@ Final Audio Frequency = 2MHz / Divider / 16
 
 **Timer Value Loading Protocol:**
 The subroutine at L1974 handles frequency updates:
+
 1. Calculate timer address based on voice number and DCO selection
 2. Retrieve 16-bit divider from frequency table
 3. Write low byte first, then high byte to selected counter
@@ -424,27 +586,30 @@ The subroutine at L1974 handles frequency updates:
 
 ### Crystal Oscillator
 
-* System appears to use 12MHz crystal (based on timer calculations in source)
-* Machine cycle = 12MHz/12 = 1MHz
-* Timer 0 configured for regular interrupts (display refresh and CV updates)
-* Timer 0 reload value 0xA0 provides ~375Hz interrupt rate
+* System uses 12MHz crystal
+* Machine cycle = 12MHz/12 = 1MHz (1 microsecond per cycle)
+* Timer 0 configured in Mode 0 (13-bit timer) for regular interrupts
+* Timer 0 reload value: TH0=0xA0, TL0=0x00 (13-bit value: 0x1400 = 5120)
+* Counts from 5120 to 8192 (overflow) = 3072 machine cycles = 3.072ms
+* Timer 0 interrupt rate: 1/0.003072 ≈ 325.5 Hz (display refresh and CV updates)
 
 ### Real-time Operations
 
-* Timer interrupt services display multiplexing every ~2.67ms
-* All 24 control voltages updated each interrupt cycle
-* Switch matrix scanned every 8th interrupt (~21.3ms)
+* Timer 0 interrupt fires every 3.072ms (~325.5 Hz)
+* Display multiplexing updated each interrupt (8 digits × 325.5Hz = ~2.6kHz refresh per digit)
+* All control voltages (24 S&H channels) updated each interrupt cycle
+* Switch matrix scanned every 8th interrupt (8 × 3.072ms ≈ 24.6ms)
 * ADC alternates between mod wheel and pitch bend each interrupt
 
 ### Real-Time Performance Specifications
 
-* **Timer 0 interrupt**: ~375Hz for CV updates and display refresh
-* **Switch scanning**: Every 8th interrupt (~47ms) 
-* **ADC sampling**: Alternates between mod wheel and pitch bend each interrupt
+* **Timer 0 interrupt**: 325.5Hz (3.072ms period) for CV updates and display refresh
+* **Switch scanning**: Every 8th interrupt (~24.6ms cycle time)
+* **ADC sampling**: Alternates between mod wheel and pitch bend each interrupt (162.75Hz per channel)
 * **MIDI processing**: Interrupt-driven with 256-byte circular buffers
-* **Voice latency**: Typically <5ms from key press to sound output
-* **Interrupt latency**: <50 microseconds (estimated)
-* **Key-to-sound delay**: <5 milliseconds total
+* **Voice latency**: Typically <10ms from key press to sound output (depends on interrupt timing)
+* **Interrupt latency**: <50 microseconds (estimated, interrupt-driven architecture)
+* **Key-to-sound delay**: <10 milliseconds total system latency
 * **Maximum key rate**: Limited by MIDI (31.25 kbaud) not keybed interface
 
 ### Display and User Interface Hardware

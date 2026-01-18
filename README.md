@@ -7,7 +7,15 @@ This repository contains a comprehensive analysis of the Crumar BIT 99 synthesiz
 ### Technical Analysis
 
 * **[Hardware Implementation](hardware_implementation.md)** - Complete hardware architecture, memory mapping, I/O registers, and interface specifications
-* **[Software Implementation](software_implementation.md)** - Firmware functionality, MIDI implementation, voice management, and real-time processing algorithms
+* **[Software Implementation](software_implementation.md)** - Firmware functionality, voice management, real-time processing algorithms, and detailed timing analysis including:
+  - LFO frequency ranges: 17.13 Hz (fastest) to 0.0099 Hz (slowest, ~1.7 minutes/cycle)
+  - Envelope timing ranges: 8.6 milliseconds (fastest) to 51.5 seconds (slowest) per phase
+  - Complete startup procedure and system initialization sequence
+* **[MIDI Implementation](midi_implementation.md)** - Comprehensive MIDI protocol documentation including:
+  - Channel voice messages (Note On/Off, Pitch Bend, Control Changes)
+  - System Exclusive (SysEx) functions for patch management and system control
+  - UART hardware interface and interrupt-driven buffer management
+  - MIDI Implementation Chart and compatibility notes
 
 ### User Documentation  
 
